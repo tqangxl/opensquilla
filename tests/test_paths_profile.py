@@ -74,9 +74,18 @@ def test_default_profiles_root_uses_env(monkeypatch, tmp_path) -> None:
     assert default_profiles_root() == tmp_path / "profiles"
 
 
-def test_default_profiles_root_returns_none_when_unset(monkeypatch) -> None:
+def test_default_profiles_root_returns_default_when_unset(
+    monkeypatch, tmp_path
+) -> None:
+    """After the maintainer review, the default profiles root is always
+    materialised: ``$HOME/.opensquilla/profiles``. ``None`` is no longer
+    a valid return value, which means multi-instance mode is the default
+    on every host — ``opensquilla --profile <name> init`` works without
+    any environment configuration.
+    """
     monkeypatch.delenv("OPENSQUILLA_HOME", raising=False)
-    assert default_profiles_root() is None
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert default_profiles_root() == tmp_path / ".opensquilla" / "profiles"
 
 
 def test_default_profiles_root_expands_tilde(monkeypatch, tmp_path) -> None:
@@ -126,16 +135,23 @@ def test_default_opensquilla_home_resolves_via_profile(
     assert default_opensquilla_home() == profile_root / "agent-b"
 
 
-def test_default_opensquilla_home_falls_back_to_legacy_single_instance(
+def test_default_opensquilla_home_uses_profiles_default_when_unset(
     monkeypatch, tmp_path
 ) -> None:
-    """No STATE_DIR, no PROFILES_DIR, no PROFILE → legacy $HOME/.opensquilla."""
+    """No STATE_DIR, no HOME, no PROFILE → multi-instance default
+    ``$HOME/.opensquilla/profiles/default``. The legacy
+    ``$HOME/.opensquilla`` home is auto-migrated on first call, so
+    an existing install transparently lands in the same place after
+    the migration runs once.
+    """
     monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
     monkeypatch.delenv("OPENSQUILLA_HOME", raising=False)
     monkeypatch.delenv("OPENSQUILLA_PROFILE", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    assert default_opensquilla_home() == tmp_path / ".opensquilla"
+    # On a fresh tmp_path with no legacy artifacts, the resolver
+    # lands at the multi-instance default — no migration needed.
+    assert default_opensquilla_home() == tmp_path / ".opensquilla" / "profiles" / "default"
 
 
 def test_state_dir_under_profile_isolated_between_profiles(
@@ -207,10 +223,13 @@ def test_profile_home_uses_forward_slashes_in_posix_paths(
     assert home.parent == profile_root
 
 
-def test_default_profile_name_explicit_default_matches_legacy(monkeypatch, tmp_path) -> None:
-    """`OPENSQUILLA_PROFILE=default` WITHOUT `OPENSQUILLA_HOME` should
-    still land in the legacy `~/.opensquilla/` home — profile mode is opt-in
-    via PROFILES_DIR, so PROFILE alone does not move the on-disk location.
+def test_default_profile_name_explicit_default_lands_under_profiles_root(
+    monkeypatch, tmp_path
+) -> None:
+    """With multi-instance mode the default, ``OPENSQUILLA_PROFILE=default``
+    and no ``OPENSQUILLA_HOME`` resolves to
+    ``$HOME/.opensquilla/profiles/default``, not the legacy
+    ``$HOME/.opensquilla``.
     """
     monkeypatch.delenv("OPENSQUILLA_STATE_DIR", raising=False)
     monkeypatch.delenv("OPENSQUILLA_HOME", raising=False)
@@ -218,4 +237,4 @@ def test_default_profile_name_explicit_default_matches_legacy(monkeypatch, tmp_p
     monkeypatch.setenv("HOME", str(tmp_path))
 
     home = default_opensquilla_home()
-    assert home == tmp_path / ".opensquilla"
+    assert home == tmp_path / ".opensquilla" / "profiles" / "default"

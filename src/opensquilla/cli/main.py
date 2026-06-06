@@ -7,13 +7,17 @@ from pathlib import Path
 
 import typer
 
-from opensquilla.env import load_env, warn_if_proxy_ignored
-from opensquilla.paths import is_valid_profile_name
+from opensquilla.env import warn_if_proxy_ignored
+from opensquilla.paths import default_opensquilla_home, is_valid_profile_name
 
-# Populate os.environ from .env files before any submodule import reads keys.
-# Precedence: os.environ > $CWD/.env > $CWD/.env.test > ~/.opensquilla/.env.
-load_env()
-warn_if_proxy_ignored()
+# `load_env()` is NOT called at module import time on purpose: the active
+# profile (CLI --profile + OPENSQUILLA_PROFILE env) is only known after
+# Typer parses the global callback, so loading here would always pick the
+# legacy ~/.opensquilla/.env regardless of which profile the user picked.
+# The callback below resolves the active profile, calls load_env(home=...),
+# then re-invokes warn_if_proxy_ignored() so the proxy hint is logged
+# against the post-load env. Subcommand modules are imported below;
+# they don't read env at import time, so the deferred load is safe.
 
 from opensquilla.cli.agent_cmd import run_agent_command  # noqa: E402
 from opensquilla.cli.agents_cmd import agents_app  # noqa: E402
@@ -92,17 +96,26 @@ def _profile_callback(
     if ctx.invoked_subcommand is None:
         return
     name = (profile or "").strip()
-    if not name:
-        return
-    if not is_valid_profile_name(name):
-        raise typer.BadParameter(
-            f"Invalid profile name {name!r}; must match "
-            f"^[a-z0-9][a-z0-9_-]{{0,63}}$."
-        )
-    # Export so subprocesses (e.g. `gateway start` spawning `gateway run`)
-    # inherit the active profile and so any code path that reads
-    # `os.environ["OPENSQUILLA_PROFILE"]` directly sees the CLI choice.
-    os.environ["OPENSQUILLA_PROFILE"] = name
+    if name:
+        if not is_valid_profile_name(name):
+            raise typer.BadParameter(
+                f"Invalid profile name {name!r}; must match "
+                f"^[a-z0-9][a-z0-9_-]{{0,63}}$."
+            )
+        # Export so subprocesses (e.g. `gateway start` spawning `gateway run`)
+        # inherit the active profile and so any code path that reads
+        # `os.environ["OPENSQUILLA_PROFILE"]` directly sees the CLI choice.
+        os.environ["OPENSQUILLA_PROFILE"] = name
+
+    # Now that the active profile is known, resolve the home and load
+    # .env from THAT home. Loading before this point would have picked
+    # the legacy ~/.opensquilla/.env regardless of --profile, which
+    # leaked keys across profile boundaries.
+    from opensquilla.env import load_env
+
+    home = default_opensquilla_home()
+    load_env(home=home)
+    warn_if_proxy_ignored()
 
 
 # ── memory sub-app ────────────────────────────────────────────────────────────

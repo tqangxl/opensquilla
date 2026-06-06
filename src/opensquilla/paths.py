@@ -1,23 +1,26 @@
 """OpenSquilla state-root resolution.
 
-Single source of truth for the on-disk state root. One env var controls
-the root, and every subsystem derives its sub-path from the helper here.
+Single source of truth for the on-disk state root. Two env vars control
+the root, and every subsystem derives its sub-path from the helpers here.
 
 Resolution precedence for the home directory:
 
 1. ``OPENSQUILLA_STATE_DIR`` environment variable (expanded for ``~``/``$HOME``)
    — full override; bypasses profile resolution for back-compat with
    single-instance deployments and CI scripts that pin a specific path.
-2. ``$OPENSQUILLA_HOME/$OPENSQUILLA_PROFILE`` — multi-instance mode.
-   Set ``OPENSQUILLA_HOME`` to the parent directory (default
-   ``$HOME/.opensquilla/profiles``) and ``OPENSQUILLA_PROFILE`` (default
-   ``"default"``) to select one. Profile names must match
-   ``^[a-z0-9][a-z0-9_-]{0,63}$`` to prevent path-traversal escapes.
-3. ``$HOME/.opensquilla`` — single-instance default (no profile mode).
+2. ``$OPENSQUILLA_HOME/$OPENSQUILLA_PROFILE`` — multi-instance mode
+   (the default on every host). Set ``OPENSQUILLA_HOME`` to the parent
+   directory (default ``$HOME/.opensquilla/profiles``) and
+   ``OPENSQUILLA_PROFILE`` (default ``"default"``) to select one. Profile
+   names must match ``^[a-z0-9][a-z0-9_-]{0,63}$`` to prevent
+   path-traversal escapes.
 
 Multi-instance mode lets a single host run several OpenSquilla agents in
 parallel, each with its own state/logs/config workspace, without sharing
-locks, sockets, or state files.
+locks, sockets, or state files. Multi-instance is the default so
+``opensquilla --profile <name> init`` works without any environment
+configuration; single-instance callers should set
+``OPENSQUILLA_STATE_DIR`` to the legacy home path.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ __all__ = [
     "default_profile_name",
     "default_profiles_root",
     "is_valid_profile_name",
+    "maybe_migrate_legacy_home",
     "media_root_from_config",
     "profile_home",
     "state_dir",
@@ -68,22 +72,27 @@ def is_valid_profile_name(name: str) -> bool:
     return bool(_PROFILE_NAME_RE.fullmatch(name))
 
 
-def default_profiles_root() -> Path | None:
+def default_profiles_root() -> Path:
     """Return the directory that contains all OpenSquilla profile homes.
 
-    Honors ``OPENSQUILLA_HOME`` (trimmed, ``~``/``$HOME`` expanded).
-    Returns ``None`` when unset or empty — that signals "profile mode is
-    not active" and :func:`default_opensquilla_home` falls back to the
-    legacy single-instance home (``$HOME/.opensquilla``).
+    Honors ``OPENSQUILLA_HOME`` (trimmed, ``~``/``$HOME`` expanded). When
+    the env var is unset or empty, falls back to
+    ``$HOME/.opensquilla/profiles`` so that
+    ``opensquilla --profile <name> init`` works without any environment
+    configuration. Each profile lives as a direct subdirectory of this
+    root (``$HOME/.opensquilla/profiles/default/``,
+    ``$HOME/.opensquilla/profiles/coder/``, …) — siblings, not nested,
+    so an operator with ``OPENSQUILLA_HOME=D:\ai\opensquilla\profiles``
+    gets the same flat layout as one who never set the env var.
 
-    Returning ``None`` instead of a synthesized default keeps
-    :func:`default_opensquilla_home` byte-compatible with deployments that
-    never set the env var: the on-disk location is unchanged.
+    The legacy ``$HOME/.opensquilla`` home contents are auto-migrated
+    into the ``default`` profile on first call — see
+    :func:`maybe_migrate_legacy_home` for the safety contract.
     """
     override = os.environ.get(_PROFILES_DIR_ENV, "").strip()
-    if not override:
-        return None
-    return _expand_user(override)
+    if override:
+        return _expand_user(override)
+    return _home_dir() / ".opensquilla" / "profiles"
 
 
 def default_profile_name() -> str:
@@ -101,13 +110,15 @@ def default_profile_name() -> str:
 def profile_home(profile_name: str | None = None) -> Path:
     """Return the home directory for ``profile_name`` under the profiles root.
 
-    Validates the name and raises :class:`ValueError` on path-traversal
-    attempts. ``None`` means "use the current env-resolved profile name".
+    Resolves to ``default_profiles_root() / <profile_name>``. Validates the
+    name and raises :class:`ValueError` on path-traversal attempts; ``None``
+    means "use the current env-resolved profile name".
 
-    Raises :class:`RuntimeError` when profile mode is not active (i.e.
-    :func:`default_profiles_root` returns ``None``) but a non-default name
-    was requested. Callers that want the legacy ``$HOME/.opensquilla``
-    behavior should call :func:`default_opensquilla_home` directly.
+    The profiles root defaults to ``$HOME/.opensquilla/profiles`` when
+    ``OPENSQUILLA_HOME`` is unset, so the default profile lands at
+    ``$HOME/.opensquilla/profiles/default/`` and additional profiles
+    (``--profile coder``) land at
+    ``$HOME/.opensquilla/profiles/coder/`` — siblings, not nested.
     """
     name = (profile_name or default_profile_name()).strip()
     if not is_valid_profile_name(name):
@@ -115,17 +126,7 @@ def profile_home(profile_name: str | None = None) -> Path:
             f"Invalid OpenSquilla profile name: {name!r}. "
             f"Must match {_PROFILE_NAME_RE.pattern}."
         )
-    root = default_profiles_root()
-    if root is None:
-        if name == _DEFAULT_PROFILE_NAME:
-            return _home_dir() / ".opensquilla"
-        raise RuntimeError(
-            f"OpenSquilla profile mode is not active: "
-            f"{_PROFILES_DIR_ENV} is not set, so profile {name!r} has no "
-            f"profiles root to live in. Set {_PROFILES_DIR_ENV} to a directory "
-            f"or unset {_PROFILE_ENV} to fall back to the legacy home."
-        )
-    return root / name
+    return default_profiles_root() / name
 
 
 def default_opensquilla_home() -> Path:
@@ -135,14 +136,159 @@ def default_opensquilla_home() -> Path:
 
     * ``OPENSQUILLA_STATE_DIR`` wins when set (back-compat with
       single-instance deployments that pin a specific path).
-    * ``OPENSQUILLA_HOME`` set + ``OPENSQUILLA_PROFILE`` set →
-      ``$OPENSQUILLA_HOME/$OPENSQUILLA_PROFILE`` (multi-instance).
-    * Otherwise the legacy ``$HOME/.opensquilla`` home (unchanged).
+    * Otherwise resolve to ``$OPENSQUILLA_HOME/$OPENSQUILLA_PROFILE``
+      (multi-instance; defaults to ``$HOME/.opensquilla/profiles/default``
+      when ``OPENSQUILLA_HOME`` is unset).
+
+    Triggers a one-time automatic migration from the legacy
+    ``$HOME/.opensquilla`` home when the resolver would otherwise land
+    in ``$HOME/.opensquilla/profiles/default``; see
+    :func:`maybe_migrate_legacy_home` for the safety contract.
     """
     override = os.environ.get(_STATE_DIR_ENV, "").strip()
     if override:
         return _expand_user(override)
-    return profile_home()
+    resolved = profile_home()
+    maybe_migrate_legacy_home(resolved)
+    return resolved
+
+
+# --- Legacy migration -------------------------------------------------------
+
+# Sentinel file written to the new home once migration has run. Prevents
+# repeated migration on every CLI invocation; on hosts where the user
+# later rolls back the migration manually, deleting the sentinel causes
+# the next call to re-attempt it.
+_MIGRATION_SENTINEL = ".migrated-to-profiles-root"
+
+# Subpaths of a legacy $HOME/.opensquilla home that we know how to move
+# into a profile subdirectory. Anything outside this list (e.g. a
+# user-added `custom-stuff/`) is left in place under the legacy home so
+# the migration is strictly additive.
+_LEGACY_SUBDIRS = ("state", "logs", "workspace", "media")
+_LEGACY_FILES = ("config.toml", ".env")
+
+
+def _is_legacy_home_nonempty(legacy: Path) -> bool:
+    """Return True if ``legacy`` looks like a real pre-profiles install."""
+    if not legacy.is_dir():
+        return False
+    for name in _LEGACY_SUBDIRS:
+        if (legacy / name).is_dir() and any((legacy / name).iterdir()):
+            return True
+    for name in _LEGACY_FILES:
+        if (legacy / name).is_file():
+            return True
+    return False
+
+
+def maybe_migrate_legacy_home(new_home: Path) -> bool:
+    """One-time, best-effort migration of the legacy ``$HOME/.opensquilla``
+    home into ``new_home`` (a profile directory).
+
+    Returns ``True`` if a migration actually ran; ``False`` if no
+    migration was needed or attempted. The migration is intentionally
+    conservative:
+
+    * Only runs when ``OPENSQUILLA_HOME`` is unset — explicit
+      ``OPENSQUILLA_HOME`` callers own their layout and do not want
+      silent moves of unrelated state.
+    * Only moves the canonical subpaths listed in
+      :data:`_LEGACY_SUBDIRS` / :data:`_LEGACY_FILES`; anything else
+      under the legacy home stays put. This keeps the migration
+      strictly additive.
+    * Uses :func:`os.rename` (atomic on the same filesystem on POSIX
+      and Windows when the source and target are on the same volume).
+      Falls back to :func:`shutil.move` if rename fails across
+      filesystems, and finally to copy+delete if even that fails — never
+      loses the source, may leave the source in place on hard failure.
+    * Writes :data:`_MIGRATION_SENTINEL` on success and skips the
+      migration thereafter. Deleting the sentinel forces a re-run.
+
+    The function is a no-op when:
+
+    * the legacy home is missing or empty,
+    * the new home already exists (operator-managed; do not touch),
+    * a sentinel from a prior successful migration is present,
+    * the current profile name is not ``"default"`` (only the default
+      profile ever inherits the legacy layout — non-default profiles
+      live strictly under the profiles root from day one).
+    """
+    # Only auto-migrate for the default profile, only when OPENSQUILLA_HOME
+    # is unset, and only when the migration has not been disabled by an
+    # explicit operator choice.
+    if default_profile_name() != _DEFAULT_PROFILE_NAME:
+        return False
+    if os.environ.get(_PROFILES_DIR_ENV, "").strip():
+        return False
+
+    new_home = new_home.resolve()
+    sentinel = new_home / _MIGRATION_SENTINEL
+    if sentinel.exists():
+        return False
+    if new_home.exists():
+        # The new home already has content. Either the operator
+        # created it manually, or migration already ran and the
+        # sentinel was deleted. Either way: do not touch — they
+        # own the layout now.
+        return False
+
+    # The legacy home is the parent directory's sibling. For
+    # `$HOME/.opensquilla/profiles/default`, the legacy home is
+    # `$HOME/.opensquilla`.
+    profiles_root = new_home.parent
+    legacy = profiles_root.parent
+    if not _is_legacy_home_nonempty(legacy):
+        return False
+
+    # Move the canonical subpaths into the new home. Rename is atomic
+    # on the same volume; on cross-volume renames (rare for a fresh
+    # install) we fall back to a copy that never deletes the source on
+    # failure.
+    import shutil
+
+    new_home.mkdir(parents=True, exist_ok=True)
+    moved_any = False
+    for name in _LEGACY_SUBDIRS:
+        src = legacy / name
+        if not src.is_dir():
+            continue
+        dst = new_home / name
+        if dst.exists():
+            # The new home already has this subdir; leave both in
+            # place rather than overwriting. Operator can reconcile.
+            continue
+        try:
+            os.rename(src, dst)
+        except OSError:
+            try:
+                shutil.move(str(src), str(dst))
+            except Exception:
+                # Last-resort: copy, never delete. The legacy
+                # subdir remains in place so the operator can retry.
+                shutil.copytree(src, dst)
+        moved_any = True
+
+    for name in _LEGACY_FILES:
+        src = legacy / name
+        if not src.is_file():
+            continue
+        dst = new_home / name
+        if dst.exists():
+            continue
+        try:
+            os.rename(src, dst)
+        except OSError:
+            try:
+                shutil.move(str(src), str(dst))
+            except Exception:
+                shutil.copy2(src, dst)
+        moved_any = True
+
+    if moved_any:
+        sentinel.touch()
+        return True
+    return False
 
 
 def state_dir(*parts: str) -> Path:

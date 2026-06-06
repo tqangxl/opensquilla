@@ -22,23 +22,31 @@
 .PARAMETER Host
     Bind address passed to `gateway stop`. Must match start-all. Default 127.0.0.1.
 
+.PARAMETER Repo
+    Override the OpenSquilla source checkout that backs this script.
+    Only used when `opensquilla` is not on PATH. Defaults to the parent
+    of this script's directory (i.e. two levels up from
+    `scripts/supervisor/`).
+
 .EXAMPLE
     .\stop-all.ps1
     .\stop-all.ps1 -Force
+    .\stop-all.ps1 -Repo D:\src\opensquilla
 #>
 [CmdletBinding()]
 param(
     [string] $ProfilesRoot,
     [int]    $BasePort = 18791,
     [string] $BindHost = '127.0.0.1',
-    [switch] $Force
+    [switch] $Force,
+    [string] $Repo
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
 $root   = Get-ProfilesRoot -Override $ProfilesRoot
-$repo   = Get-OpensquillaRoot
+$cmd    = Get-OpensquillaCommand -Repo $Repo
 $entries = Get-ProfileEntries -ProfilesRoot $root
 
 if (-not $entries -or $entries.Count -eq 0) {
@@ -55,7 +63,7 @@ foreach ($entry in $entries) {
     try {
         $stopArgs = @('--profile', $entry.Name, 'gateway', 'stop', '--listen', $BindHost, '--port', [string]$port)
         if ($Force) { $stopArgs += '--force' }
-        $code = Invoke-Opensquilla -Repo $repo -Profile $entry.Path -Arguments $stopArgs
+        $code = Invoke-Opensquilla -Repo $cmd.Repo -Profile $entry.Path -Arguments $stopArgs
         # Exit code 0 = stopped; non-zero = nothing to stop / already stopped.
         if ($code -eq 0) {
             Write-Status ("[{0}] stopped" -f $entry.Name) -Level ok
