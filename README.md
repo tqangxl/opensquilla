@@ -401,6 +401,36 @@ Run several OpenSquilla agents on the same host without sharing locks,
 sockets, or state files. Each profile gets its own `config.toml`,
 `state/`, `logs/`, and `.env` under a common profiles root.
 
+#### Default layout and automatic migration
+
+The profiles root defaults to `$HOME/.opensquilla/profiles`, so the
+default profile lives at `$HOME/.opensquilla/profiles/default/` and
+named profiles (`--profile coder`) live at
+`$HOME/.opensquilla/profiles/coder/` — siblings, not nested. Setting
+`OPENSQUILLA_HOME=D:\ai\opensquilla\profiles` (or any other path)
+gives the same flat layout under that directory.
+
+```
+~/.opensquilla/profiles/   ← OPENSQUILLA_HOME (or its default)
+├── default/   ← OPENSQUILLA_PROFILE=default   (or flag omitted)
+├── coder/     ← OPENSQUILLA_PROFILE=coder
+└── agent-1/   ← OPENSQUILLA_PROFILE=agent-1
+```
+
+If you have an **existing** install under the legacy
+`$HOME/.opensquilla/` home (the layout the pre-profiles releases
+used), the very first CLI invocation after upgrading auto-migrates
+the canonical subpaths (`state/`, `logs/`, `workspace/`, `media/`,
+`config.toml`, `.env`) into `$HOME/.opensquilla/profiles/default/`
+so the legacy install becomes the `default` profile with no operator
+action required. The migration is one-time, atomic where possible,
+and writes a `.migrated-to-profiles-root` sentinel inside the new
+home so it never runs twice. Delete the sentinel to force a re-run.
+
+The migration is intentionally conservative — anything not in the
+canonical list (e.g. a `custom-stuff/` directory you created
+yourself) is left in place under the legacy home.
+
 #### Environment variables (Windows)
 
 Two variables drive profile mode. Set both; `PROFILE` alone without

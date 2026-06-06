@@ -17,21 +17,29 @@
     Must match the value used by start-all.ps1 for the per-profile
     port mapping to align with the CLI's `gateway status --port` lookup.
 
+.PARAMETER Repo
+    Override the OpenSquilla source checkout that backs this script.
+    Only used when `opensquilla` is not on PATH. Defaults to the parent
+    of this script's directory (i.e. two levels up from
+    `scripts/supervisor/`).
+
 .EXAMPLE
     .\status.ps1
     .\status.ps1 -ProfilesRoot D:\work\profiles
+    .\status.ps1 -Repo D:\src\opensquilla
 #>
 [CmdletBinding()]
 param(
     [string] $ProfilesRoot,
-    [int]    $BasePort = 18791
+    [int]    $BasePort = 18791,
+    [string] $Repo
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
 $root   = Get-ProfilesRoot -Override $ProfilesRoot
-$repo   = Get-OpensquillaRoot
+$cmd    = Get-OpensquillaCommand -Repo $Repo
 $entries = Get-ProfileEntries -ProfilesRoot $root
 
 if (-not $entries -or $entries.Count -eq 0) {
@@ -44,14 +52,20 @@ foreach ($entry in $entries) {
     $port = Get-ProfilePort -Name $entry.Name -BasePort $BasePort -ProfilesRoot $root
     $env:OPENSQUILLA_HOME = $root
     $env:OPENSQUILLA_PROFILE = $entry.Name
-    Push-Location -LiteralPath $repo
-    try {
-        $raw = & uv run opensquilla --profile $entry.Name gateway status --port $port --json 2>$null
-        $parsed = $null
-        if ($raw) { $parsed = $raw | ConvertFrom-Json -ErrorAction SilentlyContinue }
-    } finally {
-        Pop-Location
+    $statusArgs = @('--profile', $entry.Name, 'gateway', 'status', '--port', [string]$port, '--json')
+    # Capture stdout for the JSON payload. The invocation strategy mirrors
+    # Get-OpensquillaCommand: prefer the installed `opensquilla` executable
+    # (PATH-resolved by Get-Command), fall back to `uv run` from a source
+    # checkout.
+    $raw = & {
+        switch ($cmd.Mode) {
+            'installed'   { & $cmd.Exe @statusArgs 2>$null }
+            'uv-run-repo' { Push-Location $cmd.Repo; try { & uv run opensquilla @statusArgs 2>$null } finally { Pop-Location } }
+            default       { '' }
+        }
     }
+    $parsed = $null
+    if ($raw) { $parsed = $raw | ConvertFrom-Json -ErrorAction SilentlyContinue }
 
     if ($parsed) {
         $rows += [pscustomobject]@{

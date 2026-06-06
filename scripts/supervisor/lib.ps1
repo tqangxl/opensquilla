@@ -28,7 +28,6 @@ $Script:DEFAULT_PROFILES_DIR = 'D:\ai\opensquilla\profiles'
 $Script:DEFAULT_BASE_PORT = 18791
 $Script:TASK_NAME = 'OpenSquillaProfileSupervisor'
 $Script:DISPLAY_NAME = 'OpenSquilla Multi-Profile Gateway Supervisor'
-$Script:OPENSQUILLA_REPO = 'D:\ai\opensquilla\opensquilla'
 
 # --- Path / env helpers ----------------------------------------------------
 
@@ -50,13 +49,65 @@ function Get-ProfilesRoot {
 function Get-OpensquillaRoot {
     <#
     .SYNOPSIS Resolve the OpenSquilla repo root (where `uv run opensquilla ...` lives).
+    .DESCRIPTION
+    Resolution order (first hit wins):
+      1. The explicit -Repo override, if any.
+      2. The parent of this script's directory. The supervisor scripts live in
+         <repo>/scripts/supervisor/, so two levels up is the repo root. This
+         covers the documented "clone the repo and run the scripts" workflow
+         on any host without a machine-specific default.
+      3. The parent of an installed `opensquilla` executable (uv tool install
+         typically places it under %USERPROFILE%\.local\bin or
+         %LOCALAPPDATA%\uv\bin). The script does not actually need the repo
+         in this case; it only needs a path whose `uv run` invocation is
+         unambiguous, so we resolve the repo from the executable's
+         location as a last-resort tiebreaker.
+    Returns the resolved repo path, or $null if nothing was found (in which
+    case the caller should fall back to the installed executable directly).
     #>
     param([string]$Override)
-    $candidate = if ($Override) { $Override } else { $Script:OPENSQUILLA_REPO }
-    if (-not (Test-Path -LiteralPath $candidate)) {
-        throw "OpenSquilla repo not found: $candidate. Pass -Repo or set $Script:OPENSQUILLA_REPO."
+    if ($Override) {
+        if (-not (Test-Path -LiteralPath $Override)) {
+            throw "OpenSquilla repo not found: $Override. Pass -Repo or omit to auto-detect."
+        }
+        return (Resolve-Path -LiteralPath $Override).Path
     }
-    return (Resolve-Path -LiteralPath $candidate).Path
+    $scriptDir = $PSScriptRoot
+    if ($scriptDir) {
+        $candidate = Join-Path (Split-Path -Parent $scriptDir) '..' | Join-Path -ChildPath '..' | ForEach-Object { $_ }
+        # Two levels up from <repo>/scripts/supervisor/ is the repo root.
+        $candidate = Split-Path -Parent (Split-Path -Parent $scriptDir)
+        if (Test-Path -LiteralPath (Join-Path $candidate 'pyproject.toml')) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+    return $null
+}
+
+function Get-OpensquillaCommand {
+    <#
+    .SYNOPSIS Resolve the best way to invoke `opensquilla` on this host.
+    .DESCRIPTION
+    Returns a hashtable with:
+      * Mode   — 'uv-run-repo' | 'installed' | 'none'
+      * Repo   — repo path (Mode=uv-run-repo only)
+      * Exe    — full path to the installed opensquilla executable (Mode=installed only)
+    Callers should use Mode to pick the invocation strategy: uv run from Repo
+    when iterating from a source checkout, or the installed executable when
+    the user installed via `uv tool install`. PowerShell's standard
+    `Get-Command opensquilla` resolves via PATH for the second case so we
+    do not have to hard-code the tool directory.
+    #>
+    param([string]$Repo)
+    $opensquilla = Get-Command 'opensquilla' -ErrorAction SilentlyContinue
+    if ($opensquilla) {
+        return @{ Mode = 'installed'; Exe = $opensquilla.Path }
+    }
+    $resolvedRepo = Get-OpensquillaRoot -Override $Repo
+    if ($resolvedRepo -and (Test-Path -LiteralPath (Join-Path $resolvedRepo 'pyproject.toml'))) {
+        return @{ Mode = 'uv-run-repo'; Repo = $resolvedRepo }
+    }
+    return @{ Mode = 'none' }
 }
 
 # --- Profile discovery -----------------------------------------------------
@@ -153,17 +204,20 @@ function Invoke-Opensquilla {
 
     .DESCRIPTION
     Centralises the env setup (OPENSQUILLA_HOME + OPENSQUILLA_PROFILE)
-    and the working directory so the user-facing scripts don't have to repeat
-    the boilerplate. Returns the process exit code.
+    and the invocation strategy so the user-facing scripts don't have to
+    repeat the boilerplate. Returns the process exit code.
 
-    Uses `uv run opensquilla ...` so the same Python environment the developer
-    is iterating with is what supervises the gateway. `-NoNewWindow` keeps the
-    console from spawning a new window per profile when launched from a
-    terminal; when launched headless (Task Scheduler at logon) the lack of a
-    parent console is harmless.
+    Picks the best available strategy at call time:
+      1. If `opensquilla` is on PATH (typical after `uv tool install`),
+         invoke it directly — no repo needed.
+      2. Otherwise, fall back to `uv run` from a source checkout if one
+         is auto-detected next to this script. This covers the "run the
+         scripts straight from a clone" workflow.
+      3. If neither is available, throw — the operator must either
+         install the wheel or run the scripts from inside a clone.
     #>
     param(
-        [Parameter(Mandatory)] [string] $Repo,
+        [string] $Repo,
         [Parameter(Mandatory)] [string] $Profile,
         [Parameter(Mandatory)] [string[]] $Arguments
     )
@@ -171,13 +225,28 @@ function Invoke-Opensquilla {
     $profileRoot = Split-Path -Parent $Profile
     $env:OPENSQUILLA_HOME = $profileRoot
     $env:OPENSQUILLA_PROFILE = $profileLeaf
-    Push-Location -LiteralPath $Repo
-    try {
-        $proc = Start-Process -FilePath 'uv' `
-            -ArgumentList (@('run', 'opensquilla') + $Arguments) `
-            -NoNewWindow -Wait -PassThru
-        return $proc.ExitCode
-    } finally {
-        Pop-Location
+
+    $cmd = Get-OpensquillaCommand -Repo $Repo
+    switch ($cmd.Mode) {
+        'installed' {
+            $proc = Start-Process -FilePath $cmd.Exe `
+                -ArgumentList $Arguments `
+                -NoNewWindow -Wait -PassThru
+            return $proc.ExitCode
+        }
+        'uv-run-repo' {
+            Push-Location -LiteralPath $cmd.Repo
+            try {
+                $proc = Start-Process -FilePath 'uv' `
+                    -ArgumentList (@('run', 'opensquilla') + $Arguments) `
+                    -NoNewWindow -Wait -PassThru
+                return $proc.ExitCode
+            } finally {
+                Pop-Location
+            }
+        }
+        default {
+            throw 'opensquilla is not on PATH and no source checkout was auto-detected next to this script. Either run `uv tool install opensquilla` (recommended) or invoke these scripts from inside a clone of opensquilla/opensquilla.'
+        }
     }
 }

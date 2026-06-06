@@ -27,24 +27,32 @@
     If set, do not attempt to start profiles whose gateway is already
     running on the assigned port.
 
+.PARAMETER Repo
+    Override the OpenSquilla source checkout that backs this script.
+    Only used when `opensquilla` is not on PATH. Defaults to the parent
+    of this script's directory (i.e. two levels up from
+    `scripts/supervisor/`).
+
 .EXAMPLE
     .\start-all.ps1
     .\start-all.ps1 -BasePort 19000
     .\start-all.ps1 -ProfilesRoot D:\work\profiles -SkipRunning
+    .\start-all.ps1 -Repo D:\src\opensquilla
 #>
 [CmdletBinding()]
 param(
     [string] $ProfilesRoot,
     [int]    $BasePort = 18791,
     [string] $BindHost = '127.0.0.1',
-    [switch] $SkipRunning
+    [switch] $SkipRunning,
+    [string] $Repo
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
 $root   = Get-ProfilesRoot -Override $ProfilesRoot
-$repo   = Get-OpensquillaRoot
+$cmd    = Get-OpensquillaCommand -Repo $Repo
 $entries = Get-ProfileEntries -ProfilesRoot $root
 
 if (-not $entries -or $entries.Count -eq 0) {
@@ -54,7 +62,11 @@ if (-not $entries -or $entries.Count -eq 0) {
 
 Write-Status "Discovered $($entries.Count) profile(s) under $root" -Level info
 Write-Status "Base port: $BasePort (each profile = base + sorted-index)" -Level info
-Write-Status "Repo: $repo" -Level info
+switch ($cmd.Mode) {
+    'installed'     { Write-Status "Mode: installed `opensquilla` at $($cmd.Exe)" -Level info }
+    'uv-run-repo'   { Write-Status "Mode: uv run from $($cmd.Repo)" -Level info }
+    default         { Write-Status "Mode: no `opensquilla` found; set PATH or pass -Repo" -Level err }
+}
 Write-Host ''
 
 $started = 0
