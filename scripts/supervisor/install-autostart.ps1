@@ -30,15 +30,22 @@
     Override the registered task name. Default:
     `OpenSquillaProfileSupervisor`.
 
+.PARAMETER Repo
+    Override the OpenSquilla source checkout that backs the registered
+    `start-all.ps1` invocation. Only used when `opensquilla` is not on
+    PATH. Defaults to the parent of this script's directory.
+
 .EXAMPLE
     .\install-autostart.ps1
     .\install-autostart.ps1 -BasePort 19000
+    .\install-autostart.ps1 -Repo D:\src\opensquilla
 #>
 [CmdletBinding()]
 param(
     [string] $ProfilesRoot,
     [int]    $BasePort   = 18791,
-    [string] $TaskName   = 'OpenSquillaProfileSupervisor'
+    [string] $TaskName   = 'OpenSquillaProfileSupervisor',
+    [string] $Repo
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,6 +64,9 @@ $startAll = Join-Path $PSScriptRoot 'start-all.ps1'
 # Build the action payload. schtasks /TR requires the script be quoted;
 # -NoProfile keeps PSReadLine / profile-loading off the boot path.
 $actionArg = "-NoProfile -ExecutionPolicy Bypass -File `"$startAll`" -ProfilesRoot `"$root`" -BasePort $BasePort -SkipRunning"
+if ($Repo) {
+    $actionArg += " -Repo `"$Repo`""
+}
 $actionXml = "<Exec><Command>powershell.exe</Command><Arguments>$actionArg</Arguments></Exec>"
 
 # schtasks.exe doesn't accept XML inline for /Create with the patterns we

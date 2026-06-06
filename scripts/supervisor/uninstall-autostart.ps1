@@ -16,6 +16,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Load shared helpers (Write-Status, etc.) — required because this script
+# prints status via Write-Status, unlike a pure schtasks round-trip.
+. (Join-Path $PSScriptRoot 'lib.ps1')
+
 if (-not (Get-Command schtasks.exe -ErrorAction SilentlyContinue)) {
     throw 'schtasks.exe not found — this script only runs on Windows.'
 }
