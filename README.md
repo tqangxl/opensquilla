@@ -815,6 +815,36 @@ opensquilla gateway restart
 
 ---
 
+## Per-profile logon autostart (issue #193)
+
+`opensquilla --profile <name> init --autostart` registers a per-profile
+startup entry on this host, so the gateway comes back up the next time
+the user logs in. The dispatch is platform-aware:
+
+- **Windows** — a `OpenSquilla_<profile>` Task Scheduler logon task that
+  runs `opensquilla --profile <profile> gateway start` on each
+  interactive logon. Equivalent to the per-task payload of
+  `scripts/supervisor/install-autostart.ps1`, but registered per
+  profile (that script registers one global start-all task; this
+  flag registers one task per profile so individual profiles can be
+  disabled independently).
+- **macOS** — a `~/Library/LaunchAgents/com.opensquilla.<profile>.plist`
+  LaunchAgent that `launchctl load -w`s on next login. The plist sets
+  `RunAtLoad=true` and `KeepAlive=true`.
+- **Linux** — a `~/.config/systemd/user/opensquilla-<profile>.service`
+  systemd --user unit that `systemctl --user enable --now`s the
+  service.
+
+The flag is opt-in (off by default) and best-effort: if the host
+is not one of the three above, if the `opensquilla` binary is not on
+`PATH`, or if the host tool reports a failure, the wizard prints a
+warning and continues. Use `uninstall-autostart.ps1` (Windows),
+`launchctl unload -w ~/Library/LaunchAgents/com.opensquilla.<profile>.plist`
+(macOS), or `systemctl --user disable --now opensquilla-<profile>.service`
+(Linux) to roll back.
+
+---
+
 ## Credits
 
 OpenSquilla is inspired by
