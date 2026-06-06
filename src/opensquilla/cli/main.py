@@ -34,6 +34,7 @@ from opensquilla.cli.memory_flush_cmd import memory_flush_session_cmd  # noqa: E
 from opensquilla.cli.migrate_cmd import migrate_app  # noqa: E402
 from opensquilla.cli.models_cmd import app as models_app  # noqa: E402
 from opensquilla.cli.onboard_cmd import configure_command, onboard_app  # noqa: E402
+from opensquilla.cli.profiles_cmd import profiles_app  # noqa: E402
 from opensquilla.cli.providers_cmd import providers_app  # noqa: E402
 from opensquilla.cli.replay import replay_app  # noqa: E402
 from opensquilla.cli.sandbox_cmd import sandbox_app  # noqa: E402
@@ -50,6 +51,7 @@ app = typer.Typer(
 
 # ── Sub-apps ─────────────────────────────────────────────────────────────────
 
+app.add_typer(profiles_app, name="profiles")
 app.add_typer(channels_app, name="channels")
 app.add_typer(agents_app, name="agents")
 app.add_typer(config_app, name="config")

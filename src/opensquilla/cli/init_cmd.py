@@ -22,6 +22,65 @@ def _default_model_for_provider(provider: str) -> str:
     return "openai/gpt-4o-mini"
 
 
+def _env_key_name_for_provider(provider: str) -> str:
+    if provider.strip().lower() == "custom":
+        return "OPENSQUILLA_LLM_API_KEY"
+    return f"{provider.strip().upper()}_API_KEY"
+
+
+def persist_profile(
+    home,
+    *,
+    provider: str,
+    api_key: str | None = None,
+    api_key_env: str | None = None,
+    model: str | None = None,
+) -> None:
+    """Write the per-profile .env, config.toml, and state directory.
+
+    Pure (no questionary, no console) so non-interactive paths
+    (``opensquilla profiles init-all`` and friends) can reuse it.
+    Exactly one of ``api_key`` or ``api_key_env`` must be provided;
+    ``api_key_env`` is the env-var name the gateway reads at
+    runtime, so when it is supplied nothing is written into ``.env``.
+
+    Raises ``ValueError`` if both or neither of ``api_key`` /
+    ``api_key_env`` are given, mirroring the server-side guard in
+    ``onboarding.mutations.configure_provider``.
+    """
+    if (api_key is None) == (api_key_env is None):
+        raise ValueError("configure either api_key or api_key_env, not both")
+
+    env_path = home / ".env"
+    config_path = home / "config.toml"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "state").mkdir(parents=True, exist_ok=True)
+
+    key_name = _env_key_name_for_provider(provider)
+    existing_env = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+    lines = [
+        line
+        for line in existing_env.splitlines()
+        if not line.startswith(f"{key_name}=")
+    ]
+    if api_key is not None:
+        lines.append(f"{key_name}={api_key}")
+    env_path.write_text(
+        "\n".join(lines).rstrip() + "\n" if lines else "",
+        encoding="utf-8",
+    )
+
+    selected_model = model or _default_model_for_provider(provider)
+    config = {
+        "llm": {
+            "provider": provider,
+            "model": selected_model,
+        },
+        "state_dir": str(home / "state"),
+    }
+    config_path.write_text(tomli_w.dumps(config), encoding="utf-8")
+
+
 def run_init(*, autostart_register: bool = False) -> None:
     """Create a basic OpenSquilla home with env and config files.
 
@@ -33,10 +92,6 @@ def run_init(*, autostart_register: bool = False) -> None:
     ``.env`` should not abort the wizard.
     """
     home = default_opensquilla_home()
-    env_path = home / ".env"
-    config_path = home / "config.toml"
-    home.mkdir(parents=True, exist_ok=True)
-    (home / "state").mkdir(parents=True, exist_ok=True)
 
     provider = questionary.select(
         "Choose provider:",
@@ -57,21 +112,15 @@ def run_init(*, autostart_register: bool = False) -> None:
     if not default_model:
         raise typer.Exit(1)
 
-    key_name = f"{provider.upper()}_API_KEY" if provider != "custom" else "OPENSQUILLA_LLM_API_KEY"
-    existing_env = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
-    lines = [line for line in existing_env.splitlines() if not line.startswith(f"{key_name}=")]
-    lines.append(f"{key_name}={api_key}")
-    env_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    persist_profile(
+        home,
+        provider=provider,
+        api_key=api_key,
+        model=default_model,
+    )
 
-    config = {
-        "llm": {
-            "provider": provider,
-            "model": default_model,
-        },
-        "state_dir": str(home / "state"),
-    }
-    config_path.write_text(tomli_w.dumps(config), encoding="utf-8")
-
+    env_path = home / ".env"
+    config_path = home / "config.toml"
     console.print(f"[green]Wrote[/green] {env_path}")
     console.print(f"[green]Wrote[/green] {config_path}")
     console.print("[dim]Tip: enable shell completion with `opensquilla --install-completion`[/dim]")
