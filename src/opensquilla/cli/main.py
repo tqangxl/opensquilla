@@ -34,6 +34,7 @@ from opensquilla.cli.memory_flush_cmd import memory_flush_session_cmd  # noqa: E
 from opensquilla.cli.migrate_cmd import migrate_app  # noqa: E402
 from opensquilla.cli.models_cmd import app as models_app  # noqa: E402
 from opensquilla.cli.onboard_cmd import configure_command, onboard_app  # noqa: E402
+from opensquilla.cli.profiles_cmd import profiles_app  # noqa: E402
 from opensquilla.cli.providers_cmd import providers_app  # noqa: E402
 from opensquilla.cli.replay import replay_app  # noqa: E402
 from opensquilla.cli.sandbox_cmd import sandbox_app  # noqa: E402
@@ -50,6 +51,7 @@ app = typer.Typer(
 
 # ── Sub-apps ─────────────────────────────────────────────────────────────────
 
+app.add_typer(profiles_app, name="profiles")
 app.add_typer(channels_app, name="channels")
 app.add_typer(agents_app, name="agents")
 app.add_typer(config_app, name="config")
@@ -691,6 +693,44 @@ def gateway_status(
         listen=listen,
         config_path=config_path,
         gateway_url=gateway_url,
+        json_output=json_output,
+    )
+
+
+@gateway_app.command("agents")
+def gateway_agents(
+    config_path: str | None = typer.Option(
+        None, "--config", help="Override config path (for one profile).",
+    ),
+    all_profiles: bool = typer.Option(
+        False, "--all", help="List agents for every profile under $OPENSQUILLA_HOME.",
+    ),
+    watch: bool = typer.Option(
+        False, "--watch", "-w",
+        help="Poll and re-print every 2s (Ctrl-C to stop).",
+    ),
+    watch_interval: float = typer.Option(
+        2.0, "--interval", help="Watch poll interval in seconds.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """List agents and their sessions by reading state directly.
+
+    Reads ``state/sessions.db`` (SQLite, WAL, read-only) and the
+    ``state/agents/<id>/`` filesystem tree. Does not call the LLM
+    and does not talk to the gateway over HTTP/WS — it works
+    even when the daemon is dead, when the LLM is unreachable,
+    or when the network is down. This is the first thing to
+    check when ``gateway status`` reports unhealthy and you want
+    to know what the daemon was doing before it crashed.
+    """
+    from opensquilla.cli.gateway_cmd import list_agents_gateway
+
+    list_agents_gateway(
+        config_path=config_path,
+        all_profiles=all_profiles,
+        watch=watch,
+        watch_interval=watch_interval,
         json_output=json_output,
     )
 
