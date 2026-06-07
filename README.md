@@ -815,6 +815,91 @@ opensquilla gateway restart
 
 ---
 
+## Per-profile logon autostart (issue #193)
+
+`opensquilla --profile <name> init --autostart` registers a per-profile
+startup entry on this host, so the gateway comes back up the next time
+the user logs in. The dispatch is platform-aware:
+
+- **Windows** — a `OpenSquilla_<profile>` Task Scheduler logon task that
+  runs `opensquilla --profile <profile> gateway start` on each
+  interactive logon. Equivalent to the per-task payload of
+  `scripts/supervisor/install-autostart.ps1`, but registered per
+  profile (that script registers one global start-all task; this
+  flag registers one task per profile so individual profiles can be
+  disabled independently).
+- **macOS** — a `~/Library/LaunchAgents/com.opensquilla.<profile>.plist`
+  LaunchAgent that `launchctl load -w`s on next login. The plist sets
+  `RunAtLoad=true` and `KeepAlive=true`.
+- **Linux** — a `~/.config/systemd/user/opensquilla-<profile>.service`
+  systemd --user unit that `systemctl --user enable --now`s the
+  service.
+
+The flag is opt-in (off by default) and best-effort: if the host
+is not one of the three above, if the `opensquilla` binary is not on
+`PATH`, or if the host tool reports a failure, the wizard prints a
+warning and continues. Use `uninstall-autostart.ps1` (Windows),
+`launchctl unload -w ~/Library/LaunchAgents/com.opensquilla.<profile>.plist`
+(macOS), or `systemctl --user disable --now opensquilla-<profile>.service`
+(Linux) to roll back.
+
+---
+
+## Initialising every profile in one go
+
+When `OPENSQUILLA_HOME` contains several profile directories
+(`default/`, `coder/`, `test/`, …) it is tedious to run
+`opensquilla --profile <name> init` for each. `opensquilla profiles
+init-all` walks `OPENSQUILLA_HOME/profiles/*/`, and for every
+uninitialised profile (no `.env` + `config.toml` pair), writes the
+same provider / API-key / model triple and (by default) registers
+the per-profile logon autostart entry from the previous section:
+
+```sh
+# Initialise every profile under $OPENSQUILLA_HOME/profiles with
+# OpenRouter; re-uses the OPENROUTER_API_KEY already in the env so
+# nothing sensitive lands in any .env.
+opensquilla profiles init-all \
+    --provider openrouter \
+    --api-key-env OPENROUTER_API_KEY
+```
+
+Useful flags:
+
+- `--provider <id>` — provider applied to every profile (required).
+- `--api-key <key>` *or* `--api-key-env <name>` — exactly one must
+  be given. The `api_key` form writes the value into each profile's
+  `.env`; the `api_key_env` form just records the env-var name the
+  gateway should read at runtime.
+- `--model <id>` — override the model id (defaults to the
+  provider's recommended model).
+- `--autostart` (on by default) / `--no-autostart` — register the
+  per-profile logon autostart entry from the previous section.
+- `--only-uninitialised` (default) / `--all` — re-write every
+  profile, including already-initialised ones.
+- `--profiles-root <path>` — override `OPENSQUILLA_HOME/profiles`.
+
+Inspect the current set first with `opensquilla profiles list`:
+
+```text
+$ opensquilla profiles list
+                       Profiles under /home/tester/profiles
+┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ profile   ┃ state          ┃ home                                  ┃
+┡━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ coder     │ uninitialised  │ /home/tester/profiles/coder           │
+│ default   │ ◆ ready        │ /home/tester/profiles/default          │
+│ test      │ uninitialised  │ /home/tester/profiles/test             │
+└───────────┴────────────────┴───────────────────────────────────────┘
+```
+
+Failures inside the autostart dispatcher (one host tool broken, an
+out-of-date shim path, a profile-name that triggers a system
+guard) are surfaced per-profile and do not abort the loop — the
+remaining profiles are still initialised.
+
+---
+
 ## Credits
 
 OpenSquilla is inspired by
