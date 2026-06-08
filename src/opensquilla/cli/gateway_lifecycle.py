@@ -367,8 +367,10 @@ class GatewayLifecycleManager:
             managed=False,
             code=None if ok else UNMANAGED_GATEWAY_RUNNING,
             message=(
-                "A healthy gateway is already running on the requested host/port, "
-                "but OpenSquilla does not own it."
+                f"A healthy gateway is already running at {_http_url(self.host, self.port)} "
+                f"(host={self.host}, port={self.port}), "
+                "but OpenSquilla does not own it. "
+                "Use that URL to talk to the existing gateway, or stop it first."
             ),
             exit_code_value=3,
         )
